@@ -1,0 +1,207 @@
+---
+sidebar_position: 2
+slug: using-anchor-feeds
+title: Using Anchor Feeds
+description: Learn how to consume Scaling feeds on Flare.
+keywords:
+  [
+    ftso,
+    oracle,
+    flare-time-series-oracle,
+    flare-network,
+    smart-contracts,
+    solidity,
+  ]
+unlisted: false
+---
+
+To read an anchor feed, you need to follow the following key steps:
+
+1. **Query the price with associated proof**. The easiest way is to use the DA-Layer API to get both price and proof (you can also use the FTSO scaling API to get the price and proof).
+
+2. **Supply the price and proof to the smart contract on chain**.
+  Smart contract needs to to two tings:
+    1. Verify the proof and price struct against the on chain Merkle root.
+    2. Use the verified price in the smart contract according to the business logic.
+
+To increase the efficiency of the FTSOv2, the full price data is not stored onchain.
+Instead, commitment to the price data is stored onchain and the full price data is stored offchain, but can easily be verified onchain against the Merkle root stored onchain.
+
+Since the verification of the price and Merkle proof is performed on-chain against a Merkle root deposited by data providers, you can always independently verify that provided proof and price are correct and a malicious DA-layer or scaling client cannot trick you with incorrect data. 
+
+<!--
+TODO: Add links where to get the DA-Layer API and FTSO scaling API from official Flare infrastructure.
+-->
+
+## Using scaling prices in solidity smart contracts
+
+Scaling prices can be used in solidity smart contracts by verifying the price and proof against the on-chain Merkle root.
+
+The easiest way to do this is to use the `FtsoV2Interface` interface that is available in the periphery package and can be accessed through the contract registry library (`ContractRegistry.getFtsoV2()`) or through `IFlareContractRegistry` under the name `FtsoV2`.
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.7.6 <0.9;
+
+/**
+ * FtsoV2 long term support interface.
+ */
+interface FtsoV2Interface {
+
+    /// Feed data structure
+    struct FeedData {
+        uint32 votingRoundId;
+        bytes21 id;
+        int32 value;
+        uint16 turnoutBIPS;
+        int8 decimals;
+    }
+
+    /// Feed data with proof structure
+    struct FeedDataWithProof {
+        bytes32[] proof;
+        FeedData body;
+    }
+
+    /**
+     * Checks if the feed data is valid (i.e. is part of the confirmed Merkle tree).
+     * @param _feedData Structure containing data about the feed (FeedData structure) and Merkle proof.
+     * @return true if the feed data is valid.
+     */
+    function verifyFeedData(FeedDataWithProof calldata _feedData) external view returns (bool);
+}
+```
+
+Function `verifyFeedData` verifies the price data and proof against the on-chain Merkle root.
+Since the data struct already contains the voting round id, the function knows which root to use and you don't need to provide any additional information.
+
+Struct `FeedDataWithProof` contains two fields, where `FeedData` is the price data and `proof` is the Merkle proof that can be used to verify the price data.
+Your business logic will mostly interact with the `FeedData` part of the struct, while the `proof` part is used to verify the price data.
+
+Simple example of a smart contract that receives the price data and proof and saves the price data on-chain if the proof is valid:
+
+```solidity
+// SPDX-License-Identifier: MIT
+pragma solidity >=0.8.0 <0.9.0;
+
+import {FtsoV2Interface} from "@flarenetwork/flare-periphery-contracts/coston2/FtsoV2Interface.sol";
+import {ContractRegistry} from "@flarenetwork/flare-periphery-contracts/coston2/ContractRegistry.sol";
+
+contract FtsoV2FeedConsumerDA {
+    mapping(uint32 => mapping(bytes21 => FtsoV2Interface.FeedData))
+        public provenFeeds;
+
+    function savePrice(FtsoV2Interface.FeedDataWithProof calldata data) public {
+        // Step 1: Verify the proof
+        require(
+            ContractRegistry.getFtsoV2().verifyFeedData(data),
+            "Invalid proof"
+        );
+        // We know that the price is valid
+        // DAPP specific business logic
+        // Step 2: Use the feed data
+        provenFeeds[data.body.votingRoundId][data.body.id] = data.body;
+    }
+}
+```
+
+## Query ScalingLayer
+
+The standardized DA-layer API allows you to query the value and proof for multiple feeds from the same voting epoch at once. 
+
+You can run 
+
+With Scaling, you have to fetch the price and the proof offchain. This can be acheived using ScalingLayer.
+For example, to get the prices for BTC/USD, ETH/USD and BTC/USD, query the `anchor-feeds-with-proof` POST endpoint as follows:
+
+```bash
+curl -X 'POST' \
+  'https://API_URL/api/v0/ftso/anchor-feeds-with-proof?voting_round_id=802550' \
+  -H 'accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "feed_ids": [
+    "0x014254432f55534400000000000000000000000000"
+  ]
+}'
+```
+
+This will return the following response:
+
+```json
+[
+  {
+    "body": {
+      "votingRoundId": 802550,
+      "id": "0x014254432f55534400000000000000000000000000",
+      "value": 6777692,
+      "turnoutBIPS": 9776,
+      "decimals": 2
+    },
+    "proof": [
+      "0x19af2ab8054d0f01b65ae30a4ec9497b8a51a75c3194ea5d1873980ed0fa1a58",
+      "0xb9d5a8e6df11f9508c443bf3908e8e66adc813516cb9a846ca7066cfff2e13cb",
+      "0x132ccc9b9632b9020f1a3181c82f31918f107120dd6fff262af80b98bd340d62",
+      "0xac173708f874d6c2676a60052da54f9dc2a41c29faed776d2cc6b9d37436bafe",
+      "0xf8e6e44b30d56cf72929c29d5ad95e6e964baa9bae3b116eb09ad448129340c3"
+    ]
+  }
+]
+```
+
+One can provide multiple feed ids in the `feed_ids` array to get the price and proof for multiple feeds in a single query and the `0x` prefix is optional for the feed ids.
+To learn more about how you can get the `feed_ids` for the feeds you are interested in, refer to the [Anchor feed](anchor-feeds) documentation.
+
+## Providing price and proof to the smart contract
+
+The following example demonstrates how to to query the price from a DA-layer and provide the price and proof to the smart contract.
+
+```ts
+import "dotenv/config";
+import { artifacts } from 'hardhat';
+import { FtsoV2FeedConsumerDAContract } from '../typechain-types';
+const FtsoV2FeedConsumerDA: FtsoV2FeedConsumerDAContract = artifacts.require('FtsoV2FeedConsumerDA');
+
+const { DA_API_URL, API_KEY } = process.env
+
+const BTC_USD_FEED_ID = "0x014254432f55534400000000000000000000000000"
+const TARGET_VOTING_ROUND = 802550
+
+async function getDALayerData(feedIds: string, voting_round_id: number) {
+    return await (await fetch(DA_API_URL + `ftso/anchor-feeds-with-proof?voting_round_id=${voting_round_id}`,
+        {
+            method: "POST",
+            headers: { "X-API-KEY": API_KEY as string, "Content-Type": "application/json" },
+            body: JSON.stringify({
+                "feed_ids": [feedIds]
+            })
+        })).json();
+}
+
+async function main() {
+    const feedConsumer = await FtsoV2FeedConsumerDA.new()
+
+    const data = await getDALayerData(BTC_USD_FEED_ID, TARGET_VOTING_ROUND)
+
+    await feedConsumer.savePrice(
+        {
+            proof: data[0].proof,
+            body: data[0].data
+        }
+    )
+
+    const savedPrice = await feedConsumer.provenFeeds.call(TARGET_VOTING_ROUND, BTC_USD_FEED_ID)
+    const nicePrice = savedPrice.value * Math.pow(10, -savedPrice.decimals)
+    console.log(`Saved price: ${nicePrice}$ at voting round: ${savedPrice.votingRoundId.toString()}`)
+}
+
+main().then(() => process.exit(0))
+```
+
+<!--
+## Verifying the price and proof off-chain
+-->
+
+<!--
+## The `FeedData` struct
+-->
