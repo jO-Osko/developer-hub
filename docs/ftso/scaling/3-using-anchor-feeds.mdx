@@ -105,14 +105,11 @@ contract FtsoV2FeedConsumerDA {
 }
 ```
 
-## Query ScalingLayer
+## Query DA-layer for price and proof
 
 The standardized DA-layer API allows you to query the value and proof for multiple feeds from the same voting epoch at once. 
 
-You can run 
-
-With Scaling, you have to fetch the price and the proof offchain. This can be acheived using ScalingLayer.
-For example, to get the prices for BTC/USD, ETH/USD and BTC/USD, query the `anchor-feeds-with-proof` POST endpoint as follows:
+For example, to get the prices for `BTC/USD` query the `anchor-feeds-with-proof` POST endpoint as follows:
 
 ```bash
 curl -X 'POST' \
@@ -154,7 +151,7 @@ To learn more about how you can get the `feed_ids` for the feeds you are interes
 
 ## Providing price and proof to the smart contract
 
-The following example demonstrates how to to query the price from a DA-layer and provide the price and proof to the smart contract.
+The following example demonstrates how to query the price from a DA-layer and provide the price and proof to the smart contract.
 
 ```ts
 import "dotenv/config";
@@ -196,6 +193,33 @@ async function main() {
 }
 
 main().then(() => process.exit(0))
+```
+
+## Query scaling data provider directly
+
+If you run a data provider, you can use the data provider API to get the price and proof for the feeds you are interested in.
+The on chain part is the same as in the previous example, but the offchain query is different.
+
+```ts
+async function getDataProviderData(feedId: string, voting_round_id: number) {
+    return await (await fetch(DATA_PROVIDER_URL + `specific-feed/${feedIds}/${voting_round_id}`,
+        {
+            method: "GET",
+            headers: { "X-API-KEY": API_KEY as string, "Content-Type": "application/json" },
+        })).json();
+}
+
+async function main() {
+    const feedConsumer = await FtsoV2FeedConsumerDA.new()
+
+    const data = await getDataProviderData(BTC_USD_FEED_ID, TARGET_VOTING_ROUND)
+    
+    await feedConsumer.savePrice(data.feedWithProof)
+
+    const savedPrice = await feedConsumer.provenFeeds.call(TARGET_VOTING_ROUND, BTC_USD_FEED_ID)
+    const nicePrice = savedPrice.value * Math.pow(10, -savedPrice.decimals)
+    console.log(`Saved price: ${nicePrice}$ at voting round: ${savedPrice.votingRoundId.toString()}`)
+}
 ```
 
 <!--
